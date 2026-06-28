@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Testes / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentos sintéticos gerados (mantém só os .gitkeep)
+dataset/**/sintetico_*.pdf
+dataset/**/sintetico_*.png
+
+# Modelos baixados pelo RapidOCR
+*.onnx
+
+# IDE
+.idea/
+.vscode/
