@@ -1,1 +1,0 @@
-"""Camada HTTP (FastAPI)."""

@@ -1,0 +1,32 @@
+/** Unidades federativas oficiais do Brasil. */
+export const UFS = new Set<string>([
+  'AC',
+  'AL',
+  'AP',
+  'AM',
+  'BA',
+  'CE',
+  'DF',
+  'ES',
+  'GO',
+  'MA',
+  'MT',
+  'MS',
+  'MG',
+  'PA',
+  'PB',
+  'PR',
+  'PE',
+  'PI',
+  'RJ',
+  'RN',
+  'RS',
+  'RO',
+  'RR',
+  'SC',
+  'SP',
+  'SE',
+  'TO',
+]);
+
+export const isUF = (uf: string): boolean => UFS.has((uf || '').toUpperCase());

@@ -1,9 +1,0 @@
-# Motores de OCR (necessários para imagens e PDFs escaneados).
-# RapidOCR usa os modelos PP-OCR (família PaddleOCR) via ONNX: instala 100% por
-# pip, sem dependências de sistema, e funciona offline — ideal no Windows.
-rapidocr-onnxruntime>=1.3
-opencv-python-headless>=4.8
-numpy>=1.24
-
-# Alternativa: Tesseract (exige o binário do Tesseract instalado no sistema).
-# pytesseract>=0.3.10

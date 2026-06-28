@@ -1,147 +1,106 @@
-# RGP Extractor
+# PAC RGP Extractor
 
-Serviço **local e gratuito** para extrair dados de documentos RGP (Registro
-Geral da Atividade Pesqueira) — pessoa física e jurídica — a partir de **PDF,
-PNG ou JPG**, retornando um **JSON estruturado** com validação determinística
-(CPF, CNPJ, RGP, datas, número de processo) e confiança por campo.
+API **NestJS** que recebe um certificado **RGP** (Registro Geral da Atividade Pesqueira — MAPA/Secretaria de Aquicultura e Pesca), em **PDF ou imagem**, e devolve os dados **estruturados em JSON** usando o LLM **Google Gemini** (`gemini-2.5-flash`) com visão.
 
-Sem APIs pagas. Todo o processamento roda na sua máquina/servidor.
+Cobre os dois modelos do documento:
 
----
+- **Pessoa Física** — Nome + CPF
+- **Pessoa Jurídica** — Razão Social + CNPJ + representante legal
 
-## Como rodar (escolha um caminho)
+## Como funciona
 
-### 1. Teste rápido nesta máquina — SEM OCR (recomendado para validar agora)
+1. Upload do arquivo em `POST /api/v1/extract` (multipart, campo `file`).
+2. O PDF é enviado **inline** ao Gemini (sem OCR local, sem rasterização). O modelo lê texto + imagem de cada página.
+3. A resposta é forçada a um schema (**Structured Output**) e validada defensivamente com Zod.
+4. **Validadores determinísticos** conferem CPF/CNPJ (mód-11), RGP e datas, normalizam os valores e sinalizam o que precisa de revisão.
+5. Retorna um envelope JSON: `{ success, document_type, data, validations, warnings, processing }`.
 
-O caminho **"PDF com texto nativo"** não precisa de Tesseract nem de RapidOCR.
-Funciona só com as dependências do núcleo.
+## Requisitos
 
-```powershell
-# na pasta do projeto
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
+- Node.js 20+
+- Uma chave de API do Gemini ([Google AI Studio](https://aistudio.google.com/apikey))
 
-# gera documentos sintéticos (PF e PJ) em dataset/ para você testar
-python -m tools.generate_synthetic_docs --pdf-only
-
-# roda a bateria de testes
-pytest
-
-# sobe a API
-uvicorn app.main:app --reload
-```
-
-Ou simplesmente:
-
-```powershell
-./run_local.ps1
-```
-
-Depois abra a documentação interativa em **http://localhost:8000/api/doc** e
-envie `dataset/pj/sintetico_pj.pdf` no endpoint `POST /api/v1/extract`.
-
-### 2. Com OCR (imagens PNG/JPG e PDFs escaneados)
-
-```powershell
-pip install -r requirements-ocr.txt
-python -m tools.generate_synthetic_docs        # gera também os PNGs
-./run_local.ps1 -WithOcr
-```
-
-O motor padrão é o **RapidOCR** (modelos PP-OCR da família PaddleOCR via ONNX),
-que instala 100% por `pip` e funciona offline. O **Tesseract** é opcional
-(instale o binário e `pytesseract`, e configure `RGP_OCR_ENGINES=tesseract`).
-
-> Este projeto **não usa Docker** — roda direto com Python + venv. Para colocar
-> em um servidor, basta `uvicorn app.main:app --host 0.0.0.0 --port 8000`
-> (atrás de um proxy reverso, ou como serviço do Windows / `systemd` no Linux).
-
----
-
-## Endpoints
-
-| Método | Rota                                            | Descrição                         |
-|--------|-------------------------------------------------|-----------------------------------|
-| GET    | `/health`                                       | status + motores de OCR ativos    |
-| POST   | `/api/v1/extract`                               | envia o arquivo, recebe o JSON    |
-| GET    | `/api/v1/documents/{id}`                        | consulta resultado salvo          |
-| PUT    | `/api/v1/documents/{id}/fields/{campo}`         | correção manual de um campo       |
-
-Exemplo de chamada:
+## Instalação
 
 ```bash
-curl -F "file=@dataset/pj/sintetico_pj.pdf" http://localhost:8000/api/v1/extract
+npm install
+cp .env.example .env   # preencha GEMINI_API_KEY
 ```
 
----
+## Execução
+
+```bash
+npm run start:dev      # http://localhost:3001
+```
+
+- **Swagger:** http://localhost:3001/api/doc
+- **Health:** `GET http://localhost:3001/api/v1/health`
+
+### Exemplo (curl)
+
+```bash
+curl -F "file=@Lealmar RGP 12.11.23.pdf" http://localhost:3001/api/v1/extract
+```
+
+## Variáveis de ambiente
+
+| Variável             | Default            | Descrição                                                        |
+| -------------------- | ------------------ | ---------------------------------------------------------------- |
+| `GEMINI_API_KEY`     | —                  | Obrigatória. Chave do Google AI Studio.                          |
+| `GEMINI_MODEL`       | `gemini-2.5-flash` | Modelo usado.                                                    |
+| `GEMINI_MAX_RETRIES` | `2`                | Tentativas extras em caso de falha de parsing/transient.         |
+| `PORT`               | `3001`             | Porta HTTP.                                                      |
+| `CORS_ORIGIN`        | `*`                | Origem permitida no CORS.                                        |
+| `MAX_UPLOAD_MB`      | `20`               | Limite de tamanho do upload.                                     |
+
+## Testes
+
+```bash
+npm test           # unit (validadores, schema, use case) — não chama a API
+npm run test:e2e   # e2e do controller com o gateway Gemini mockado
+npm run smoke:real # OPCIONAL: chama a API Gemini de verdade (consome cota)
+```
+
+## Formato da resposta
+
+```jsonc
+{
+  "success": true,
+  "document_type": "RGP_PJ",            // RGP_PF | RGP_PJ | NAO_IDENTIFICADO
+  "data": {
+    "tipo_pessoa": "PJ",
+    "numero_rgp": "SC-0004633-8",
+    "nome_embarcacao": "LEALMAR",
+    "razao_social": "COMÉRCIO DE PESCADOS PALHOÇA LTDA ME",
+    "cnpj": "05.383.614/0001-13",
+    "especie_alvo": ["..."],
+    "fauna_acompanhante": ["..."],
+    "data_inicio_validade": "2018-11-12",
+    "data_termino_validade": "2023-11-12"
+    // ... demais campos (null quando ausentes)
+  },
+  "validations": [
+    { "campo": "cnpj", "valor": "05.383.614/0001-13", "valido": true, "normalizado": "05.383.614/0001-13", "mensagem": null }
+  ],
+  "warnings": [],
+  "processing": { "model": "gemini-2.5-flash", "input_tokens": 0, "output_tokens": 0, "pages": 1, "used_native_text": false, "duration_ms": 0 }
+}
+```
 
 ## Arquitetura
 
+Clean Architecture (4 camadas), espelhando o backend principal `back`:
+
 ```
-app/
-├── documents/      # carregar/validar PDF e imagem (magic bytes, limites)
-├── image_processing/  # pré-processamento (cinza, denoise, deskew) — OpenCV opcional
-├── ocr/            # motores plugáveis (rapidocr, tesseract) + seleção automática
-├── classification/ # PF x PJ por palavras-chave + CPF/CNPJ válidos
-├── extraction/     # parser por rótulos+regex, normalização, montagem do resultado
-├── validators/     # CPF, CNPJ, RGP, datas, nº de processo, UF (determinísticos)
-├── quality/        # confiança por campo e do documento + decisão de revisão
-├── schemas/        # modelos Pydantic de entrada/saída
-├── pipeline.py     # orquestra: bytes -> JSON
-└── main.py         # FastAPI
-tools/generate_synthetic_docs.py  # gera documentos de teste (PF/PJ)
-tests/              # validadores, parser, classificador, pipeline e API
+src/
+├── domain/          # entities (IRgpCertificado, IExtractResult) + gateway (ILlmRgpGateway)
+├── application/     # AppError + ExtractRgpUseCase (retry, validações, envelope)
+├── infrastructure/  # GeminiRgpAdapter, schema Zod, validators (cpf/cnpj/rgp/dates), providers
+└── presentation/    # controller, DTOs, módulos, filtro de erro, main.ts (swagger)
 ```
 
-Fluxo: **arquivo → validação → (texto nativo do PDF | OCR da imagem) →
-classificação PF/PJ → extração por rótulos → normalização → validação →
-confiança → JSON**.
+O gateway `ILlmRgpGateway` é **agnóstico de provedor** — trocar Gemini por outro LLM é só implementar outro adapter.
 
----
+## Integração futura com o `back`
 
-## Decisões de projeto (diferenças em relação ao PLANO.md)
-
-Estas escolhas foram feitas para o sistema ser **testável imediatamente** nesta
-máquina (Windows, sem Tesseract e sem Docker) e por **ainda não haver
-documentos reais**:
-
-1. **OCR padrão = RapidOCR** (pip, sem dependência de sistema) em vez do
-   Tesseract. O Tesseract continua suportado como motor alternativo.
-2. **Extração por rótulos + regex** em vez de templates por coordenada. Os
-   templates por coordenada (Fases 4 e 6 do plano) exigem documentos de
-   referência para mapear posições — quando houver amostras reais, a extração
-   por coordenadas pode ser plugada sem alterar o restante do pipeline.
-3. **Gerador de documentos sintéticos** para permitir teste de ponta a ponta
-   sem documentos reais.
-4. **Caminho de texto nativo** (PDF pesquisável) processa **sem nenhum OCR**.
-
-O que **já** atende ao MVP do plano (seção 10): aceita PDF/PNG/JPG, identifica
-PF/PJ, extrai os campos principais, valida CPF/CNPJ/datas/RGP, retorna JSON,
-marca campos duvidosos, processa localmente, sem API paga, com testes
-automatizados.
-
----
-
-## Integração com o backend Node.js (PAC)
-
-O Node não executa OCR; ele envia o arquivo para este serviço:
-
-```javascript
-const form = new FormData();
-form.append("file", arquivo);
-const resp = await fetch("http://rgp-extractor:8000/api/v1/extract", {
-  method: "POST",
-  body: form,
-});
-const resultado = await resp.json();
-```
-
----
-
-## Próximos passos (homologação)
-
-- Coletar documentos reais (PF e PJ, várias qualidades) em `dataset/`.
-- Mapear templates por coordenada para os layouts recorrentes.
-- Ajustar limiares de confiança (`RGP_CONF_*`) com base nos acertos por campo.
-- Reprocessamento com segundo motor (Tesseract↔RapidOCR) em campos duvidosos.
+Defina `OCR_EXTRACTOR_URL=http://localhost:3001` no `back` e chame `POST /api/v1/extract` via `axios`, mantendo a chave Gemini fora do backend principal.

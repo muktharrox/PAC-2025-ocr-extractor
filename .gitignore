@@ -1,23 +1,25 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
+# Dependencies
+/node_modules
+
+# Build
+/dist
+*.tsbuildinfo
+
+# Env
 .env
+.env.local
 
-# Testes / cobertura
-.pytest_cache/
-.coverage
-htmlcov/
+# Coverage / tests
+/coverage
 
-# Documentos sintéticos gerados (mantém só os .gitkeep)
-dataset/**/sintetico_*.pdf
-dataset/**/sintetico_*.png
+# Logs
+*.log
+npm-debug.log*
 
-# Modelos baixados pelo RapidOCR
-*.onnx
+# Editor / OS
+.DS_Store
+.idea
+*.swp
 
-# IDE
-.idea/
-.vscode/
+# Smoke test samples (PDFs locais)
+/scripts/samples
