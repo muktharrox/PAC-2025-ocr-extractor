@@ -28,11 +28,11 @@ export class GeminiRgpAdapter implements ILlmRgpGateway {
     return this.client;
   }
 
-  async extract(buffer: Buffer, mimeType: string, feedbackErro?: string): Promise<ILlmExtractResult> {
+  async extract(buffer: Buffer, mimeType: string, feedbackErro?: string, model?: string): Promise<ILlmExtractResult> {
     const base64 = buffer.toString('base64');
 
     const response = await this.getClient().models.generateContent({
-      model: this.model,
+      model: model || this.model,
       contents: [
         {
           role: 'user',

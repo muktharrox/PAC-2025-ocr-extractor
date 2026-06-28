@@ -101,6 +101,59 @@ describe('ExtractRgpUseCase', () => {
     expect(calls).toBe(2);
   });
 
+  it('mapeia sobrecarga do provedor de IA (503 UNAVAILABLE) para 503, não 422', async () => {
+    const overloaded: ILlmRgpGateway = {
+      extract: jest.fn(async () => {
+        throw new Error(
+          '{"error":{"code":503,"message":"This model is currently experiencing high demand.","status":"UNAVAILABLE"}}',
+        );
+      }),
+    };
+    const useCase = new ExtractRgpUseCase(overloaded, makeConfig({ GEMINI_MAX_RETRIES: 0 }));
+    await expect(useCase.execute({ buffer: PDF_BYTES, filename: 'x.pdf' })).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(overloaded.extract).toHaveBeenCalledTimes(1);
+  });
+
+  it('cai para o modelo de fallback quando o primário está sobrecarregado (503)', async () => {
+    const usados: string[] = [];
+    const comFallback: ILlmRgpGateway = {
+      extract: jest.fn(async (_buffer, _mime, _feedback, model) => {
+        usados.push(model as string);
+        if (model === 'gemini-2.5-flash') {
+          throw new Error('{"error":{"code":503,"status":"UNAVAILABLE"}}');
+        }
+        return { data: baseData(), usage: { inputTokens: 10, outputTokens: 5 } };
+      }),
+    };
+    const useCase = new ExtractRgpUseCase(
+      comFallback,
+      makeConfig({
+        GEMINI_MODEL: 'gemini-2.5-flash',
+        GEMINI_FALLBACK_MODELS: 'gemini-2.0-flash',
+        GEMINI_MAX_RETRIES: 0,
+      }),
+    );
+    const result = await useCase.execute({ buffer: PDF_BYTES, filename: 'x.pdf' });
+
+    expect(result.success).toBe(true);
+    expect(usados).toEqual(['gemini-2.5-flash', 'gemini-2.0-flash']);
+    expect(result.processing.model).toBe('gemini-2.0-flash');
+  });
+
+  it('mapeia falha de extração não transitória para 422', async () => {
+    const failing: ILlmRgpGateway = {
+      extract: jest.fn(async () => {
+        throw new Error('Resposta do LLM não é JSON válido');
+      }),
+    };
+    const useCase = new ExtractRgpUseCase(failing, makeConfig({ GEMINI_MAX_RETRIES: 0 }));
+    await expect(useCase.execute({ buffer: PDF_BYTES, filename: 'x.pdf' })).rejects.toMatchObject({
+      statusCode: 422,
+    });
+  });
+
   it('rejeita arquivo acima do limite (413)', async () => {
     const useCase = new ExtractRgpUseCase(gatewayReturning(baseData()), makeConfig({ MAX_UPLOAD_MB: 0.00001 }));
     await expect(useCase.execute({ buffer: PDF_BYTES, filename: 'big.pdf' })).rejects.toMatchObject({

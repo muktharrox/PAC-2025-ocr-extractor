@@ -22,6 +22,7 @@ export abstract class ILlmRgpGateway {
    * @param buffer conteúdo binário do arquivo
    * @param mimeType ex.: application/pdf, image/png
    * @param feedbackErro mensagem da tentativa anterior, para reforçar o prompt no retry
+   * @param model modelo a usar nesta chamada (sobrepõe o padrão); habilita fallback de modelo
    */
-  abstract extract(buffer: Buffer, mimeType: string, feedbackErro?: string): Promise<ILlmExtractResult>;
+  abstract extract(buffer: Buffer, mimeType: string, feedbackErro?: string, model?: string): Promise<ILlmExtractResult>;
 }

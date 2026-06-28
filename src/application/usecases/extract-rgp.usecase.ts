@@ -37,7 +37,8 @@ export class ExtractRgpUseCase {
   private readonly logger = new Logger(ExtractRgpUseCase.name);
   private readonly maxBytes: number;
   private readonly maxRetries: number;
-  private readonly model: string;
+  /** Cadeia de modelos: o primário seguido dos fallbacks (deduplicada, sem vazios). */
+  private readonly models: string[];
 
   constructor(
     private readonly llm: ILlmRgpGateway,
@@ -45,7 +46,15 @@ export class ExtractRgpUseCase {
   ) {
     this.maxBytes = Number(config.get('MAX_UPLOAD_MB', 20)) * 1024 * 1024;
     this.maxRetries = Number(config.get('GEMINI_MAX_RETRIES', 2));
-    this.model = config.get<string>('GEMINI_MODEL', 'gemini-2.5-flash');
+
+    const primary = config.get<string>('GEMINI_MODEL', 'gemini-2.5-pro');
+    // Default vazio mantém GEMINI_MAX_RETRIES como controle absoluto de tentativas.
+    // O fallback de produção (gemini-2.5-flash) é definido via env (.env.example).
+    const fallbacks = (config.get<string>('GEMINI_FALLBACK_MODELS', '') || '')
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+    this.models = [...new Set([primary, ...fallbacks])];
   }
 
   async execute({ buffer, filename }: ExtractRgpInput): Promise<IExtractResult> {
@@ -59,9 +68,14 @@ export class ExtractRgpUseCase {
     const mimeType = this.detectMime(buffer, filename);
 
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    let feedbackErro: string | undefined; // só feedback de conteúdo/parse volta para o prompt
+    let modelIndex = 0;
+    // Garante pelo menos uma tentativa por modelo, somadas às retentativas configuradas.
+    const totalAttempts = Math.max(this.maxRetries + 1, this.models.length);
+    for (let attempt = 0; attempt < totalAttempts; attempt++) {
+      const model = this.models[Math.min(modelIndex, this.models.length - 1)];
       try {
-        const { data, usage } = await this.llm.extract(buffer, mimeType, lastError?.message);
+        const { data, usage } = await this.llm.extract(buffer, mimeType, feedbackErro, model);
         const normalized = this.reconcileTipoPessoa(data);
         const { validations, warnings } = this.runValidators(normalized);
 
@@ -72,7 +86,7 @@ export class ExtractRgpUseCase {
           validations,
           warnings,
           processing: {
-            model: this.model,
+            model, // modelo que efetivamente respondeu (pode ser um fallback)
             input_tokens: usage.inputTokens,
             output_tokens: usage.outputTokens,
             pages: 1,
@@ -83,19 +97,74 @@ export class ExtractRgpUseCase {
       } catch (err) {
         if (err instanceof AppError) throw err; // erros de negócio não são re-tentados
         lastError = err as Error;
-        this.logger.warn(`Tentativa ${attempt + 1} falhou: ${lastError.message}`);
-        if (attempt < this.maxRetries) {
-          await this.delay(500 * (attempt + 1));
+        const transient = ExtractRgpUseCase.isTransientLlmError(lastError);
+        // Erro transitório (503/429): troca para o próximo modelo de fallback, se houver.
+        const switchingModel = transient && modelIndex < this.models.length - 1;
+        this.logger.warn(
+          `Tentativa ${attempt + 1}/${totalAttempts} (modelo ${model}) falhou` +
+            `${transient ? ' (provedor de IA indisponível)' : ''}` +
+            `${switchingModel ? ` — tentando fallback ${this.models[modelIndex + 1]}` : ''}: ${lastError.message}`,
+        );
+        if (switchingModel) modelIndex += 1;
+        // Erro transitório do provedor não é feedback útil para o prompt.
+        feedbackErro = transient ? undefined : lastError.message;
+        if (attempt < totalAttempts - 1) {
+          await this.delay(this.backoffMs(attempt, transient, switchingModel));
         }
       }
     }
 
     this.logger.error('Falha ao extrair RGP após retries', lastError?.stack);
+    if (ExtractRgpUseCase.isTransientLlmError(lastError)) {
+      throw new AppError(
+        'O serviço de extração (IA) está temporariamente sobrecarregado. Aguarde alguns instantes e tente novamente.',
+        503,
+      );
+    }
     throw new AppError('Não foi possível extrair os dados do certificado. Tente novamente.', 422);
   }
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Tempo de espera entre tentativas:
+   * - ao trocar para um modelo de fallback "fresco", espera só o mínimo (o modelo
+   *   novo não é o sobrecarregado, então não vale a pena aguardar);
+   * - em sobrecarga do mesmo modelo, backoff exponencial com jitter (≈1s, 2s, 4s… até 8s);
+   * - em erros de conteúdo/parse, backoff curto e linear.
+   */
+  private backoffMs(attempt: number, transient: boolean, switchingModel: boolean): number {
+    if (switchingModel) return 150;
+    if (!transient) return 500 * (attempt + 1);
+    const exponential = Math.min(1000 * 2 ** attempt, 8000);
+    const jitter = Math.floor(Math.random() * 400);
+    return exponential + jitter;
+  }
+
+  /**
+   * Detecta erros transitórios do provedor de IA (sobrecarga/limite de uso), que
+   * devem virar 503 + nova tentativa — e NÃO 422 (que sugere documento inválido).
+   * O @google/genai lança um ApiError cuja `message` é o JSON do erro
+   * (ex.: {"error":{"code":503,"status":"UNAVAILABLE",...}}); por robustez também
+   * cobrimos um eventual `.status`/`.code` numérico.
+   */
+  static isTransientLlmError(err: Error | null): boolean {
+    if (!err) return false;
+    const status = (err as { status?: unknown }).status ?? (err as { code?: unknown }).code;
+    if (status === 503 || status === 429 || status === '503' || status === '429') return true;
+    const msg = (err.message || '').toLowerCase();
+    return (
+      msg.includes('"code":503') ||
+      msg.includes('"code":429') ||
+      msg.includes('unavailable') ||
+      msg.includes('overloaded') ||
+      msg.includes('high demand') ||
+      msg.includes('resource_exhausted') ||
+      msg.includes('rate limit') ||
+      msg.includes('too many requests')
+    );
   }
 
   private detectMime(buffer: Buffer, filename: string): string {
